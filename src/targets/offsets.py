@@ -17,7 +17,7 @@ def build_offset_targets(batch, stride: int = 32):
     device = imgs.device
 
     U = torch.zeros((B, 2, h, w), dtype=torch.float32, device=device)
-    M = torch.zeros((B, 2, h, w), dtype=torch.float32, device=device)
+    M = torch.zeros((B, 1, h, w), dtype=torch.float32, device=device)
 
     for b in range(B):
         nodes = batch["nodes"][b] # (N, 2)
