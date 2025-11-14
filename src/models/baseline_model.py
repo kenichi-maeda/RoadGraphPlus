@@ -8,7 +8,7 @@ from torch_geometric.nn import EdgeConv
 
 from src.targets.junctions import build_junction_heatmaps
 from src.targets.offsets import build_offset_targets
-from src.data.graph_utils import build_knn_candidates_and_labels
+from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, build_edge_labels, build_knn_from_pred, assign_pred_to_gt
 from src.losses.junctions import junction_bce_loss
 from src.losses.offsets import offset_loss
 
@@ -218,7 +218,7 @@ class BaselineModel(pl.LightningModule):
         self.cnnFeatureEncoder_2 = CNNFeaturEnoder(2048, 256)
         self.cnnFeatureEncoder_3 = CNNFeaturEnoder(2048, 256)
 
-        self.offsetPredictor = OffsetPredictor(256, 1)
+        self.offsetPredictor = OffsetPredictor(256, 2)
         self.junctionPredictor = JunctionPredictor(256, 1)
         self.nodePredictor = NodePredictor(256, 256)
 
@@ -263,6 +263,7 @@ class BaselineModel(pl.LightningModule):
         J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
         offset_gt, offset_mask = build_offset_targets(batch, stride=32)
 
+        HI,WI = images.shape[-2:]
         batch_loss = 0.0
 
         for b in range(B):
@@ -270,25 +271,36 @@ class BaselineModel(pl.LightningModule):
             gt_edges    = edges_list[b] 
 
             # build candidate edges
-            edge_index, edge_label = build_knn_candidates_and_labels(
-                nodes_xy_gt, gt_edges, k=8
+            # edge_index, edge_label = build_knn_candidates_and_labels(
+            #     nodes_xy_gt, gt_edges, k=8
+            # )
+            nodes_xy_pred, scores, cells_ij = detect_nodes(
+                j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
             )
 
+            if nodes_xy_pred.size(0) == 0:
+                continue
+
+            edge_index = build_knn_from_pred(nodes_xy_pred)
+
+            min_idx = assign_pred_to_gt(nodes_xy_pred, nodes_xy_gt)
+
+            edge_label = build_edge_labels(edge_index, min_idx, gt_edges)
+
             Hc, Wc = n_map[b].shape[1:]
-            HI,WI = images.shape[-2:]
-
-            x = nodes_xy_gt[:,0]
-            y = nodes_xy_gt[:,1]
-
-            Xc = torch.clamp((x / WI * Wc).floor().long(), 0, Wc-1)
-            Yc = torch.clamp((y / HI * Hc).floor().long(), 0, Hc-1)
-
             node_map_b = n_map[b] # (256, 16, 16)
+
+            px = nodes_xy_pred[:,0]
+            py = nodes_xy_pred[:,1]
+
+            Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc-1)
+            Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc-1)
+
             node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
             node_emb, eidx, edge_logits = self.roadGraphGNN(
                 node_feats,
-                nodes_xy_gt,
+                nodes_xy_pred,
                 edge_index
             )
 
@@ -300,7 +312,7 @@ class BaselineModel(pl.LightningModule):
             loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
             batch_loss += loss_total
 
-            self.log("train/loss_j",   loss_j,   prog_bar=True)
+            self.log("train/loss_j",   loss_j,   prog_bar=False)
             self.log("train/loss_off", loss_off, prog_bar=False)
             self.log("train/loss_e",   loss_e,   prog_bar=False)
             self.log("train/loss_total", loss_total, prog_bar=True)
