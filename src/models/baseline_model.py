@@ -1,13 +1,16 @@
-from argparse import Namespace
-
 import lightning.pytorch as pl
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from torchvision import models
 from torch_geometric.nn import EdgeConv
 
+from src.targets.junctions import build_junction_heatmaps
+from src.targets.offsets import build_offset_targets
+from src.data.graph_utils import build_knn_candidates_and_labels
+from src.losses.junctions import junction_bce_loss
+from src.losses.offsets import offset_loss
 
 class BackBoneEncoder(nn.Module):
     def __init__(self):
@@ -18,7 +21,7 @@ class BackBoneEncoder(nn.Module):
 
         super().__init__()
 
-        resnet = models.resnet50(weights="IMAGENTE1K_V2")
+        resnet = models.resnet50(weights="IMAGENET1K_V2")
         self.backbone = nn.Sequential(*list(resnet.children())[:-2]) # remove avgpool & fc
 
     def forward(self, x):
@@ -168,11 +171,12 @@ class RoadGraphGNN(nn.Module):
         self.scorer = EdgeScorer(d3, hidden=256)
 
     
-    def forward(self, node_feats: torch.Tensor, xy: torch.Tensor):
+    def forward(self, node_feats: torch.Tensor, xy: torch.Tensor, edge_index: torch.Tensor):
         """
         Args:
             node_feats: (N, 256)    node features from NodePredictor
             xy:         (N, 2)      absolute pixel coords (x, y) in input image
+            edge_index: (2, E)      graph conectivity matrix
         Returns:
             node_emb:   (N, F)      final node embeddings after EdgeConvs (F = edgeconv_dims[-1])
             edge_index: (2, E)      complete directed edges (src, dst)
@@ -184,29 +188,12 @@ class RoadGraphGNN(nn.Module):
         # 1) concat (x, y) to features
         x = torch.cat([node_feats, xy.to(node_feats.dtype)], dim=-1)
 
-        # 2) build complete directed graph
-        # Suppose N = 3
-        # src: [0, 1, 2, 0, 1, 2, 0, 1, 2]
-        # dst: [0, 0, 0, 1, 1, 1, 2, 2, 2]
-        # After removing loops
-        # src: [1, 2, 0, 2, 0, 1]
-        # dst: [0, 0, 1, 1, 2, 2]
-        # edge_index:
-        # [[1, 2, 0, 2, 0, 1],
-        #  [0, 0, 1, 1, 2, 2]]
-
-        idx = torch.arange(N, device=node_feats.device)
-        src = idx.repeat(N)                # [0,1,..,N-1, 0,1,..,N-1, ...]
-        dst = idx.repeat_interleave(N)     # [0,0,..,0, 1,1,..,1, ...]
-        mask = src != dst       # removing self-loops!
-        edge_index = torch.stack([src[mask], dst[mask]], dim=0) # (2, E), E = N*(N-1)
-
-        # 3) 3x EdgeConv
+        # 2) 3x EdgeConv
         x = self.ec1(x, edge_index)         # (N, d1)
         x = self.ec2(x, edge_index)         # (N, d2)
         node_emb = self.ec3(x, edge_index)  # (N, d3)
 
-        # 4) edge scoring to get probabilities
+        # 3) edge scoring to get probabilities
         edge_logits = self.scorer(node_emb, edge_index) # (E, ) in [0, 1]
 
         return node_emb, edge_index, edge_logits
@@ -219,38 +206,107 @@ class BaselineModel(pl.LightningModule):
         """
         super().__init__()
 
-        self.args = Namespace(**args)
+        self.save_hyperparameters()
 
-        self.jun_loss_fn = ...
-        self.off_loss_fn = ...
-        self.edge_loss_fn = ...
+        self.lambda_j = 1.0
+        self.lambda_o = 1.0
+        self.lambda_e = 1.0
 
-        self.backboneEncoder = BackBoneEncoder(...)
+        self.backboneEncoder = BackBoneEncoder()
 
-        self.cnnFeatureEncoder_1 = CNNFeaturEnoder(...)
-        self.cnnFeatureEncoder_2 = CNNFeaturEnoder(...)
-        self.cnnFeatureEncoder_3 = CNNFeaturEnoder(...)
+        self.cnnFeatureEncoder_1 = CNNFeaturEnoder(2048, 256)
+        self.cnnFeatureEncoder_2 = CNNFeaturEnoder(2048, 256)
+        self.cnnFeatureEncoder_3 = CNNFeaturEnoder(2048, 256)
 
-        self.offsetPredictor = OffsetPredictor(...)
-        self.junctionPredictor = JunctionPredictor(...)
-        self.nodePredictor = NodePredictor(...)
+        self.offsetPredictor = OffsetPredictor(256, 1)
+        self.junctionPredictor = JunctionPredictor(256, 1)
+        self.nodePredictor = NodePredictor(256, 256)
 
-    def forward(self, x):
+        self.roadGraphGNN = RoadGraphGNN()
+
+
+    def forward(self, images):
         """
         Forward pass
 
         Args:
-            x: ...
+            images: (B, C, HI, WI)
+        Retuens:
+            o_pred: (B, 2, Hc, Wc) offset predictions
+            j_pred: (B, 1, Hc, Wc) junction predections
+            n_map:  (B, Nfeature, Hc, Wc) node feature maps
         """
+        encoded_images = self.backboneEncoder(images)
 
-        return ...
+        z1 = self.cnnFeatureEncoder_1(encoded_images)
+        z2 = self.cnnFeatureEncoder_2(encoded_images)
+        z3 = self.cnnFeatureEncoder_3(encoded_images)
+
+        o_pred = self.offsetPredictor(z1)
+        j_pred = self.junctionPredictor(z2)
+        n_map = self.nodePredictor(z3)
+        
+        return o_pred, j_pred, n_map
     
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
+        return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
     
     def training_step(self, batch, batch_idx):
-        loss = ...
-        return loss
+        images = batch["image"]      # (B,3,512,512)
+        nodes_list = batch["nodes"]  # list of length B
+        edges_list = batch["edges"]  # list of length B
+        B = images.size(0)
+
+        o_pred, j_pred, n_map = self(images)
+
+        # Junction & Offset targets (batch)
+        J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
+        offset_gt, offset_mask = build_offset_targets(batch, stride=32)
+
+        batch_loss = 0.0
+
+        for b in range(B):
+            nodes_xy_gt = nodes_list[b]     # (Nb,2)
+            gt_edges    = edges_list[b] 
+
+            # build candidate edges
+            edge_index, edge_label = build_knn_candidates_and_labels(
+                nodes_xy_gt, gt_edges, k=8
+            )
+
+            Hc, Wc = n_map[b].shape[1:]
+            HI,WI = images.shape[-2:]
+
+            x = nodes_xy_gt[:,0]
+            y = nodes_xy_gt[:,1]
+
+            Xc = torch.clamp((x / WI * Wc).floor().long(), 0, Wc-1)
+            Yc = torch.clamp((y / HI * Hc).floor().long(), 0, Hc-1)
+
+            node_map_b = n_map[b] # (256, 16, 16)
+            node_feats = node_map_b[:, Yc, Xc].permute(1,0)
+
+            node_emb, eidx, edge_logits = self.roadGraphGNN(
+                node_feats,
+                nodes_xy_gt,
+                edge_index
+            )
+
+            # losses for tile b 
+            loss_j = junction_bce_loss(j_pred[b:b+1], J_gt[b:b+1])
+            loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
+            loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float())
+
+            loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
+            batch_loss += loss_total
+
+            self.log("train/loss_j",   loss_j,   prog_bar=True)
+            self.log("train/loss_off", loss_off, prog_bar=False)
+            self.log("train/loss_e",   loss_e,   prog_bar=False)
+            self.log("train/loss_total", loss_total, prog_bar=True)
+
+        batch_loss /= B
+        return batch_loss
     
     def validation_step(self, *args, **kwargs):
         loss = ...
