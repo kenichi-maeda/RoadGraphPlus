@@ -12,17 +12,17 @@ from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, 
 from src.losses.junctions import junction_bce_loss
 from src.losses.offsets import offset_loss
 
+
 class BackBoneEncoder(nn.Module):
     def __init__(self):
         """
         Encodes aerial images using a pretrained ResNet-50 (initialized with ImageNet1K).
         Produces 2048-channel feature maps at 1/32 resolution.
         """
-
         super().__init__()
 
         resnet = models.resnet50(weights="IMAGENET1K_V2")
-        self.backbone = nn.Sequential(*list(resnet.children())[:-2]) # remove avgpool & fc
+        self.backbone = nn.Sequential(*list(resnet.children())[:-2]) # remove avgpool & fc. We do not need classification
 
     def forward(self, x):
         """
@@ -33,97 +33,138 @@ class BackBoneEncoder(nn.Module):
         """
         return self.backbone(x)
 
-class CNNFeaturEnoder(nn.Module):
-    def __init__(self, in_channels=2048, out_channels=256):
-        """
-        3 Conv-BN-ReLU layers.
-        Converts feature maps (2048) to compact features (256)
-        """
 
-        super().__init__()
-        
-        self.conv_1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.batchNorm_1 = nn.BatchNorm2d(out_channels)
-        self.relu_1 = nn.ReLU(inplace=True)
-
-        self.conv_2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.batchNorm_2 = nn.BatchNorm2d(out_channels)
-        self.relu_2 = nn.ReLU(inplace=True)
-
-        self.conv_3 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.batchNorm_3 = nn.BatchNorm2d(out_channels)
-        self.relu_3 = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        """
-        Args:
-            x (torch.Tensor): Encoded images (batch_sz, N_in, H, W). N_in is 2048.
-        Returns:
-            torch.Tensor: Extracted Features (batch_sz, N_feat, H, W). N_feat is 256.
-        """
-        x = self.relu_1(self.batchNorm_1(self.conv_1(x)))
-        x = self.relu_2(self.batchNorm_2(self.conv_2(x)))
-        x = self.relu_3(self.batchNorm_3(self.conv_3(x)))
-        return x
-    
 class OffsetPredictor(nn.Module):
-    def __init__(self, in_channels=256, out_channels=2):
+    def __init__(self, in_channels=2048, mid_channels=256, out_channels=2):
         """
         Precits 2D offset vectors.
+
+        NOTE: This version internally applies a 3-layer Conv-BN-ReLU stack
+        directly to the backbone feature maps (2048 -> 256 channels) before
+        producing the 2-channel offset output.
         """
-
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
 
-    def forward(self, x):
+        # 3x Conv-BN-ReLU feature encoder on top of backbone features
+        self.encoder = nn.Sequential(
+            # Layer 1
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 2
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 3
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.conv = nn.Conv2d(mid_channels, out_channels, kernel_size=1, padding=0)
+
+    def forward(self, encoded_images):
         """
         Args:
-            x (torch.Tensor): Features Maps (batch_sz, N_feat, H, W). N_feat is 256.
+            encoded_images (torch.Tensor): Backbone feature maps
+                (batch_sz, 2048, H, W)
         Returns:
             torch.Tensor: Offset predictions (batch_sz, 2, H, W)
         """
+        x = self.encoder(encoded_images)
         return self.conv(x)
 
-    
+
 class JunctionPredictor(nn.Module):
-    def __init__(self, in_channels=256, out_channels=1):
+    def __init__(self, in_channels=2048, mid_channels=256, out_channels=1):
         """
         Predicts junctions.
-        """
 
+        NOTE: This version internally applies a 3-layer Conv-BN-ReLU stack
+        directly to the backbone feature maps (2048 -> 256 channels) before
+        producing the 1-channel junction heatmap.
+        """
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
+
+        # 3x Conv-BN-ReLU feature encoder on top of backbone features
+        self.encoder = nn.Sequential(
+            # Layer 1
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 2
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 3
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.conv = nn.Conv2d(mid_channels, out_channels, kernel_size=1, padding=0)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, encoded_images):
         """
         Args:
-            x (torch.Tensor): Feature maps (batch_sz, N_feat, H, W)
+            encoded_images (torch.Tensor): Backbone feature maps
+                (batch_sz, 2048, H, W)
         Returns:
             torch.Tensor: Junction predictions (batch_sz, 1, H, W)
         """
+        x = self.encoder(encoded_images)
         x = self.conv(x)
         x = self.sigmoid(x)
         return x
-    
+
+
 class NodePredictor(nn.Module):
-    def __init__(self, in_channels=256, out_channels=256):
+    def __init__(self, in_channels=2048, mid_channels=256, out_channels=256):
         """
         Predicts nodes.
+
+        NOTE: This version internally applies a 3-layer Conv-BN-ReLU stack
+        directly to the backbone feature maps (2048 -> 256 channels) before
+        producing the 256-channel node feature map.
         """
-
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
 
-    def forward(self, x):
+        # 3x Conv-BN-ReLU feature encoder on top of backbone features
+        self.encoder = nn.Sequential(
+            # Layer 1
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 2
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+
+            # Layer 3
+            nn.Conv2d(mid_channels, mid_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.conv = nn.Conv2d(mid_channels, out_channels, kernel_size=1, padding=0)
+
+    def forward(self, encoded_images):
         """
         Args:
-            x (torch.Tensor): Image features (batch_sz, feat, H, W)
+            encoded_images (torch.Tensor): Backbone feature maps
+                (batch_sz, 2048, H, W)
         Returns:
             torch.Tensor: Node predictions (batch_sz, 256, H, W)
         """
+        x = self.encoder(encoded_images)
         return self.conv(x)
-    
+
 
 def _mlp_edge(in_dim, out_dim):
     # EdgeConv expects a nn
@@ -212,17 +253,15 @@ class BaselineModel(pl.LightningModule):
         self.lambda_o = 1.0
         self.lambda_e = 1.0
 
+        # ResNet-50 backbone encoder    
         self.backboneEncoder = BackBoneEncoder()
 
-        self.cnnFeatureEncoder_1 = CNNFeaturEnoder(2048, 256)
-        self.cnnFeatureEncoder_2 = CNNFeaturEnoder(2048, 256)
-        self.cnnFeatureEncoder_3 = CNNFeaturEnoder(2048, 256)
+        # CNN Predictors for different features of the road graph
+        self.offsetPredictor = OffsetPredictor()       # takes backbone features (2048)
+        self.junctionPredictor = JunctionPredictor()   # takes backbone features (2048)
+        self.nodePredictor = NodePredictor()           # takes backbone features (2048)
 
-        self.offsetPredictor = OffsetPredictor(256, 2)
-        self.junctionPredictor = JunctionPredictor(256, 1)
-        self.nodePredictor = NodePredictor(256, 256)
-
-        self.roadGraphGNN = RoadGraphGNN()
+        self.roadGraphGNN = RoadGraphGNN()         # takes node features (256) + (x,y)
 
 
     def forward(self, images):
@@ -238,15 +277,13 @@ class BaselineModel(pl.LightningModule):
         """
         encoded_images = self.backboneEncoder(images)
 
-        z1 = self.cnnFeatureEncoder_1(encoded_images)
-        z2 = self.cnnFeatureEncoder_2(encoded_images)
-        z3 = self.cnnFeatureEncoder_3(encoded_images)
+        # Each predictor now internally does its own 3x Conv-BN-ReLU on the backbone features
+        o_pred = self.offsetPredictor(encoded_images)
+        j_pred = self.junctionPredictor(encoded_images)
+        n_map = self.nodePredictor(encoded_images)
 
-        o_pred = self.offsetPredictor(z1)
-        j_pred = self.junctionPredictor(z2)
-        n_map = self.nodePredictor(z3)
-        
         return o_pred, j_pred, n_map
+
     
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -255,18 +292,18 @@ class BaselineModel(pl.LightningModule):
         images = batch["image"]      # (B,3,512,512)
         nodes_list = batch["nodes"]  # list of length B
         edges_list = batch["edges"]  # list of length B
-        B = images.size(0)
+        batch_size = images.size(0)
 
         o_pred, j_pred, n_map = self(images)
 
         # Junction & Offset targets (batch)
-        J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
+        J_gt = build_junction_heatmaps(batch_size, stride=32)       # (B,1,16,16)
         offset_gt, offset_mask = build_offset_targets(batch, stride=32)
 
         HI,WI = images.shape[-2:]
         batch_loss = 0.0
 
-        for b in range(B):
+        for b in range(batch_size):
             nodes_xy_gt = nodes_list[b]     # (Nb,2)
             gt_edges    = edges_list[b] 
 
@@ -317,7 +354,7 @@ class BaselineModel(pl.LightningModule):
             self.log("train/loss_e",   loss_e,   prog_bar=False)
             self.log("train/loss_total", loss_total, prog_bar=True)
 
-        batch_loss /= B
+        batch_loss /= batch_size
         return batch_loss
     
     def validation_step(self, *args, **kwargs):
