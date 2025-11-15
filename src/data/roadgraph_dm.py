@@ -13,7 +13,6 @@ class RoadGraphDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         self.ds = RoadGraphDataset(self.root, max_items=self.max_items)
 
-
     def train_dataloader(self):
         return DataLoader(
             self.ds,

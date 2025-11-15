@@ -12,7 +12,6 @@ from src.data.roadgraph_dm import RoadGraphDataModule
 
 
 def main():
-
     dm = RoadGraphDataModule(
         root="/oscar/home/kmaeda2/RoadGraphPlus",
         max_items=500,
