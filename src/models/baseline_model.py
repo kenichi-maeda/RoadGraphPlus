@@ -8,7 +8,7 @@ from torch_geometric.nn import EdgeConv
 
 from src.targets.junctions import build_junction_heatmaps
 from src.targets.offsets import build_offset_targets
-from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, build_edge_labels, build_knn_from_pred, assign_pred_to_gt
+from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, build_edge_labels, build_knn_from_pred, assign_pred_to_gt, build_knn_feature_space, convert_edges_to_local
 from src.losses.junctions import junction_bce_loss
 from src.losses.offsets import offset_loss
 
@@ -74,6 +74,7 @@ class OffsetPredictor(nn.Module):
 
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
+        self.tanh = nn.Tanh()
 
     def forward(self, x):
         """
@@ -82,7 +83,7 @@ class OffsetPredictor(nn.Module):
         Returns:
             torch.Tensor: Offset predictions (batch_sz, 2, H, W)
         """
-        return self.conv(x)
+        return self.tanh(self.conv(x)) * 0.5
 
     
 class JunctionPredictor(nn.Module):
@@ -130,7 +131,7 @@ def _mlp_edge(in_dim, out_dim):
     return nn.Sequential(
         nn.Linear(in_dim, out_dim),
         nn.ReLU(inplace=True),
-        nn.BatchNorm1d(out_dim)
+        # nn.BatchNorm1d(out_dim)
     )
 
 class EdgeScorer(nn.Module):
@@ -200,7 +201,7 @@ class RoadGraphGNN(nn.Module):
 
 
 class BaselineModel(pl.LightningModule):
-    def __init__(self, **args):
+    def __init__(self, warmup_epochs=10, anneal_epochs=20, min_gt_prob=0.2, lambda_e=1.0, **args):
         """
         Initializes PyTorch Lightning module
         """
@@ -210,7 +211,7 @@ class BaselineModel(pl.LightningModule):
 
         self.lambda_j = 1.0
         self.lambda_o = 1.0
-        self.lambda_e = 1.0
+        self.lambda_e = lambda_e
 
         self.backboneEncoder = BackBoneEncoder()
 
@@ -248,6 +249,15 @@ class BaselineModel(pl.LightningModule):
         
         return o_pred, j_pred, n_map
     
+    def _gt_prob(self):
+        e = self.current_epoch
+
+        if e < self.hparams.warmup_epochs:
+            return 1.0
+        
+        t = min(1.0, (e - self.hparams.warmup_epochs) / float(self.hparams.anneal_epochs))
+        return 1.0 * (1.0 - t) + self.hparams.min_gt_prob  * t
+    
     def configure_optimizers(self):
         return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
     
@@ -255,77 +265,410 @@ class BaselineModel(pl.LightningModule):
         images = batch["image"]      # (B,3,512,512)
         nodes_list = batch["nodes"]  # list of length B
         edges_list = batch["edges"]  # list of length B
+        node_ids_list = batch["node_ids"]
         B = images.size(0)
 
         o_pred, j_pred, n_map = self(images)
 
-        # Junction & Offset targets (batch)
+        # Junction & Offset targets
         J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
         offset_gt, offset_mask = build_offset_targets(batch, stride=32)
 
         HI,WI = images.shape[-2:]
-        batch_loss = 0.0
+        batch_loss = images.new_tensor(0.0) 
+
+        tiles_used = 0
 
         for b in range(B):
             nodes_xy_gt = nodes_list[b]     # (Nb,2)
-            gt_edges    = edges_list[b] 
+            gt_edges_global    = edges_list[b] 
+            node_ids_global = node_ids_list[b]
 
-            # build candidate edges
-            # edge_index, edge_label = build_knn_candidates_and_labels(
-            #     nodes_xy_gt, gt_edges, k=8
-            # )
-            nodes_xy_pred, scores, cells_ij = detect_nodes(
-                j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
-            )
-
-            if nodes_xy_pred.size(0) == 0:
-                continue
-
-            edge_index = build_knn_from_pred(nodes_xy_pred)
-
-            min_idx = assign_pred_to_gt(nodes_xy_pred, nodes_xy_gt)
-
-            edge_label = build_edge_labels(edge_index, min_idx, gt_edges)
+            gt_edges_local = convert_edges_to_local(node_ids_global, gt_edges_global)
 
             Hc, Wc = n_map[b].shape[1:]
             node_map_b = n_map[b] # (256, 16, 16)
 
-            px = nodes_xy_pred[:,0]
-            py = nodes_xy_pred[:,1]
+            bs = 1
+            loss_j = junction_bce_loss(j_pred[b:b+1], J_gt[b:b+1])
+            loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
+
+            p_gt   = self._gt_prob()
+            use_gt = (torch.rand(1, device=images.device) < p_gt).item()
+
+            if use_gt:
+                nodes_xy = nodes_xy_gt
+
+                px = nodes_xy[:,0]
+                py = nodes_xy[:,1]
+
+                Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc-1)
+                Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc-1)
+
+                node_feats = node_map_b[:, Yc, Xc].permute(1,0)
+
+                edge_index, edge_label = build_knn_candidates_and_labels(nodes_xy_gt, gt_edges_local)
+                
+            else:
+                nodes_xy_pred, scores, cells_ij = detect_nodes(
+                    j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
+                )
+
+                if nodes_xy_pred.size(0) < 2:
+                    loss_e = images.new_tensor(0.0)
+                    f1     = images.new_tensor(0.0)
+                    loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
+                    batch_loss = batch_loss + loss_total
+                    tiles_used += 1
+                    continue 
+
+                nodes_xy = nodes_xy_pred
+
+                px = nodes_xy[:,0]
+                py = nodes_xy[:,1]
+
+                Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc-1)
+                Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc-1)
+
+                node_feats = node_map_b[:, Yc, Xc].permute(1,0)
+
+                # This was wrong!!!
+                # edge_index = build_knn_from_pred(nodes_xy) 
+
+                edge_index = build_knn_feature_space(node_feats, k=8)
+                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=128)
+                valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
+                edge_index = edge_index[:, valid_edge_mask]
+                edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
+
+
+            if edge_index.numel() == 0 or edge_label.numel() == 0:
+                loss_e = images.new_tensor(0.0)
+                f1 = images.new_tensor(0.0)
+            else:
+                node_emb, eidx, edge_logits = self.roadGraphGNN(
+                    node_feats,
+                    nodes_xy,
+                    edge_index
+                )
+
+                pos = edge_label.float()
+                neg = 1 - pos
+                num_pos = pos.sum()
+                num_neg = neg.sum()
+
+                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=10.0)
+
+                loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float(), pos_weight=pos_weight)
+
+                pred = (edge_logits.sigmoid() > 0.5).float()
+
+                tp = (pred * edge_label).sum()
+                fp = (pred * (1 - edge_label)).sum()
+                fn = ((1 - pred) * edge_label).sum()
+
+                precision = tp / (tp + fp + 1e-6)
+                recall = tp / (tp + fn + 1e-6)
+                f1 = 2 * precision * recall / (precision + recall + 1e-6)
+
+            loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
+            batch_loss += loss_total
+            tiles_used += 1
+
+            self.log("train/loss_j", loss_j, prog_bar=True, sync_dist=True, batch_size=bs)
+            self.log("train/loss_off", loss_off, prog_bar=True, sync_dist=True, batch_size=bs)
+            self.log("train/loss_e", loss_e, prog_bar=True, sync_dist=True, batch_size=bs)
+            self.log("train/loss_total", loss_total, prog_bar=True, sync_dist=True, batch_size=bs)
+            self.log("train/edge_f1", f1, prog_bar=True, sync_dist=True, batch_size=bs)
+
+        
+        self._last_j_pred = j_pred.detach()
+        self._last_images = images.detach()
+        self._last_nodes = batch["nodes"]
+
+        if tiles_used == 0:
+            return None
+
+        batch_loss /= tiles_used
+        return batch_loss
+    
+
+    def validation_step(self, batch, batch_idx):
+        metrics_pred = self._eval_on_batch_predicted(batch)
+        metrics_gt  = self._eval_on_batch_gt_graph(batch)
+
+        bs = batch["image"].size(0)
+
+        # Predicted-node metrics 
+        self.log("val/loss_total", metrics_pred["loss_total"],
+                prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("val/loss_j", metrics_pred["loss_j"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+        self.log("val/loss_off", metrics_pred["loss_off"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+        self.log("val/loss_e", metrics_pred["loss_e"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+        self.log("val/edge_f1", metrics_pred["edge_f1"],
+                prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("val/junction_recall", metrics_pred["junction_recall"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+        self.log("val/junction_precision", metrics_pred["junction_precision"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+
+        # GT-node metrics
+        self.log("val/loss_e_gt", metrics_gt["loss_e_gt"],
+                prog_bar=False, sync_dist=True, batch_size=bs)
+        self.log("val/edge_f1_gt", metrics_gt["edge_f1_gt"],
+                prog_bar=True, sync_dist=True, batch_size=bs)
+    
+    def test_step(self, batch, batch_idx):
+        metrics = self._eval_on_batch_predicted(batch)
+        bs = batch["image"].size(0)
+
+        self.log("test/loss_total", metrics["loss_total"], prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_j", metrics["loss_j"], prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_off", metrics["loss_off"], prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_e", metrics["loss_e"], prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/edge_f1", metrics["edge_f1"], prog_bar=True, sync_dist=True, batch_size=bs)
+        
+        return metrics
+    
+    def on_train_end(self):
+        return ...
+    
+    def on_train_epoch_end(self):
+        return ...
+
+    def on_validation_epoch_end(self):
+        return ...
+
+    def on_test_epoch_end(self):
+        return ...
+    
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        return ...
+    
+    def _eval_on_batch_predicted(self, batch):
+        images = batch["image"]      # (B,3,512,512)
+        nodes_list = batch["nodes"]  # list of length B
+        edges_list = batch["edges"]  # list of length B
+        node_ids_list = batch["node_ids"]
+        B = images.size(0)
+
+        o_pred, j_pred, n_map = self(images)
+
+        # Junction & Offset targets
+        J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
+        offset_gt, offset_mask = build_offset_targets(batch, stride=32)
+
+        HI,WI = images.shape[-2:]        
+
+        total_loss = images.new_tensor(0.0)
+        total_loss_j = images.new_tensor(0.0)
+        total_loss_off = images.new_tensor(0.0)
+        total_loss_e = images.new_tensor(0.0)
+        total_f1 = images.new_tensor(0.0)
+        total_jrecall = images.new_tensor(0.0)
+        total_jprec   = images.new_tensor(0.0)
+
+        tiles_used = 0
+
+        for b in range(B):
+            nodes_xy_gt = nodes_list[b]     # (Nb,2)
+            gt_edges_global    = edges_list[b] 
+            node_ids_global = node_ids_list[b]
+
+            gt_edges_local = convert_edges_to_local(node_ids_global, gt_edges_global)
+
+            Hc, Wc = n_map[b].shape[1:]
+            node_map_b = n_map[b] # (256, 16, 16)
+
+            loss_j = junction_bce_loss(j_pred[b:b+1], J_gt[b:b+1])
+            loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
+
+            nodes_xy_pred, scores, cells_ij = detect_nodes(
+                j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
+            )
+
+            loss_e = images.new_tensor(0.0)
+            f1     = images.new_tensor(0.0)
+
+            if nodes_xy_pred.size(0) < 2:
+                loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off
+                total_loss += loss_total
+                total_loss_j += loss_j.detach()
+                total_loss_off += loss_off.detach()
+                total_loss_e += 0.0
+                total_f1 += 0.0
+                tiles_used += 1
+                continue
+
+            nodes_xy = nodes_xy_pred
+
+            px = nodes_xy[:,0]
+            py = nodes_xy[:,1]
 
             Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc-1)
             Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc-1)
 
             node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
+            # This was wrong!!!
+            #edge_index = build_knn_from_pred(nodes_xy) 
+            edge_index = build_knn_feature_space(node_feats, k=8)
+            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=128)
+
+            num_gt = len(nodes_xy_gt)
+            num_pred = len(nodes_xy_pred)
+            matched = (min_idx >= 0).sum()
+            junction_recall = matched.float() / (num_gt + 1e-6)
+            junction_precision = matched.float() / (num_pred + 1e-6)
+            total_jrecall += junction_recall
+            total_jprec += junction_precision
+
+            valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
+            edge_index = edge_index[:, valid_edge_mask]
+            edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
+
+            if edge_index.numel() > 0 and edge_label.numel() > 0:
+                node_emb, eidx, edge_logits = self.roadGraphGNN(
+                    node_feats,
+                    nodes_xy,
+                    edge_index
+                )
+
+                pos = edge_label.float()
+                neg = 1 - pos
+                num_pos = pos.sum()
+                num_neg = neg.sum()
+
+                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=10.0)
+
+                loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float(), pos_weight=pos_weight)
+
+                pred = (edge_logits.sigmoid() > 0.5).float()
+
+                tp = (pred * edge_label).sum()
+                fp = (pred * (1 - edge_label)).sum()
+                fn = ((1 - pred) * edge_label).sum()
+
+                precision = tp / (tp + fp + 1e-6)
+                recall = tp / (tp + fn + 1e-6)
+                f1 = 2 * precision * recall / (precision + recall + 1e-6)
+
+            loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
+
+            total_loss += loss_total
+            total_loss_j += loss_j.detach()
+            total_loss_off += loss_off.detach()
+            total_loss_e += loss_e.detach()
+            total_f1 += f1.detach()
+            tiles_used += 1
+
+
+        if tiles_used == 0:
+             return {
+                "loss_total": images.new_tensor(0.0),
+                "loss_j": images.new_tensor(0.0),
+                "loss_off": images.new_tensor(0.0),
+                "loss_e": images.new_tensor(0.0),
+                "edge_f1": images.new_tensor(0.0),
+                "junction_recall": images.new_tensor(0.0),
+                "junction_precision": images.new_tensor(0.0),
+            }
+        else:
+            return {
+                "loss_total": total_loss / tiles_used,
+                "loss_j": total_loss_j / tiles_used,
+                "loss_off": total_loss_off / tiles_used,
+                "loss_e": total_loss_e / tiles_used,
+                "edge_f1": total_f1 / tiles_used,
+                "junction_recall": total_jrecall / tiles_used,
+                "junction_precision": total_jprec / tiles_used,
+            }
+        
+    def _eval_on_batch_gt_graph(self, batch):
+        """
+        Evaluate GNN using GT nodes only.
+
+        Returns:
+            dict with:
+                - "edge_f1_gt": mean F1 over tiles in this batch
+                - "loss_e_gt": mean BCE loss over tiles in this batch
+        """
+        images         = batch["image"]      # (B, 3, HI, WI)
+        nodes_list     = batch["nodes"]      # list of length B
+        edges_list     = batch["edges"]      # list of length B
+        node_ids_list  = batch["node_ids"]   # list of length B
+
+        B        = images.size(0)
+        HI, WI   = images.shape[-2:]
+
+        with torch.no_grad():
+            o_pred, j_pred, n_map = self(images)
+
+        total_f1     = images.new_tensor(0.0)
+        total_loss_e = images.new_tensor(0.0)
+        tiles        = 0
+
+        for b in range(B):
+            nodes_xy_gt     = nodes_list[b]      # (N_gt, 2)
+            gt_edges_global = edges_list[b]
+            node_ids_global = node_ids_list[b]
+
+            # Skip empty tiles
+            if nodes_xy_gt.numel() == 0 or len(gt_edges_global) == 0:
+                continue
+
+            gt_edges_local = convert_edges_to_local(node_ids_global, gt_edges_global)
+            if gt_edges_local.numel() == 0:
+                continue
+
+            Hc, Wc      = n_map[b].shape[1:]
+            node_map_b  = n_map[b]
+
+            px = nodes_xy_gt[:, 0]
+            py = nodes_xy_gt[:, 1]
+
+            Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc - 1)
+            Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc - 1)
+
+            node_feats = node_map_b[:, Yc, Xc].permute(1, 0)   # (N_gt, C)
+
+            # Build KNN edges between GT nodes
+            edge_index, edge_label = build_knn_candidates_and_labels(nodes_xy_gt, gt_edges_local)
+            if edge_index.numel() == 0 or edge_label.numel() == 0:
+                continue
+
             node_emb, eidx, edge_logits = self.roadGraphGNN(
                 node_feats,
-                nodes_xy_pred,
+                nodes_xy_gt,
                 edge_index
             )
 
-            # losses for tile b 
-            loss_j = junction_bce_loss(j_pred[b:b+1], J_gt[b:b+1])
-            loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
-            loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float())
+            loss_e = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float())
 
-            loss_total = self.lambda_j*loss_j + self.lambda_o*loss_off + self.lambda_e*loss_e
-            batch_loss += loss_total
+            # F1 on GT graph
+            pred = (edge_logits.sigmoid() > 0.5).float()
+            tp   = (pred * edge_label).sum()
+            fp   = (pred * (1 - edge_label)).sum()
+            fn   = ((1 - pred) * edge_label).sum()
 
-            self.log("train/loss_j",   loss_j,   prog_bar=False)
-            self.log("train/loss_off", loss_off, prog_bar=False)
-            self.log("train/loss_e",   loss_e,   prog_bar=False)
-            self.log("train/loss_total", loss_total, prog_bar=True)
+            precision = tp / (tp + fp + 1e-6)
+            recall    = tp / (tp + fn + 1e-6)
+            f1        = 2 * precision * recall / (precision + recall + 1e-6)
 
-        batch_loss /= B
-        return batch_loss
-    
-    def validation_step(self, *args, **kwargs):
-        loss = ...
-        return loss
-    
-    def on_validation_epoch_end(self):
-        acc = ...
+            total_f1     += f1
+            total_loss_e += loss_e
+            tiles        += 1
 
-    def on_test_epoch_end(self):
-        acc = ...
+        if tiles == 0:
+            return {
+                "edge_f1_gt": images.new_tensor(0.0),
+                "loss_e_gt": images.new_tensor(0.0),
+            }
+
+        return {
+            "edge_f1_gt": total_f1 / tiles,
+            "loss_e_gt": total_loss_e / tiles,
+        }
