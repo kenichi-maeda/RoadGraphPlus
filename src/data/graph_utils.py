@@ -71,7 +71,6 @@ def detect_nodes(junc_logits, offsets_cell, HI, WI, threshold=0.3):
     xs_f = xs.to(torch.float32)
     ys_f = ys.to(torch.float32)
 
-    # Your formula:
     x = (u_cell + xs_f + 0.5) / Wc * WI
     y = (v_cell + ys_f + 0.5) / Hc * HI
 
@@ -137,31 +136,97 @@ def build_knn_from_pred(pred_xy, k=8):
 
     return edge_index
 
-def build_edge_labels(edge_index, assignments, gt_edges):
+def build_edge_labels(edge_index, min_idx, gt_edges_local):
     """
     Args:
-        edge_index: (2, E)
-        assignments: (Np,) predicted -> gt idx or -1
-        gt_edges: (E_gt, 2) GT node pairs
+        edge_index: (2, E) edges between predicted node indices
+        min_idx:   (N_pred,) mapping pred_idx -> gt_idx or -1
+        gt_edges_local: (M, 2) ground-truth edges in local GT index space
+    Returns:
+        labels: (E,) with 0/1
     """
     device = edge_index.device
+
+    if isinstance(gt_edges_local, torch.Tensor):
+        gt = gt_edges_local.clone().to(torch.long)
+    else:
+        gt = torch.tensor(gt_edges_local, dtype=torch.long, device=device)
+
+    a = torch.minimum(gt[:, 0], gt[:, 1])
+    b = torch.maximum(gt[:, 0], gt[:, 1])
+    gt_pairs = torch.stack([a, b], dim=1)
+
+    gt_set = set((int(u), int(v)) for u, v in gt_pairs)
+
     E = edge_index.size(1)
+    labels = torch.zeros(E, dtype=torch.long, device=device)
 
-    # Convert GT edge list to set of node pairs
-    gt_set = set(tuple(sorted(e.tolist())) for e in gt_edges.long())
-
-    labels = torch.zeros(E, dtype=torch.float32, device=device)
+    u_pred = edge_index[0]
+    v_pred = edge_index[1]
 
     for e in range(E):
-        i = edge_index[0, e].item()
-        j = edge_index[1, e].item()
+        pu = int(u_pred[e])
+        pv = int(v_pred[e])
 
-        gi = assignments[i]
-        gj = assignments[j]
+        gu = int(min_idx[pu])  # GT index of predicted node u
+        gv = int(min_idx[pv])  # GT index of predicted node v
 
-        if gi < 0 or gj < 0:
+        # unmatched → cannot be positive edge
+        if gu < 0 or gv < 0:
             continue
-        if (min(gi, gj), max(gi, gj)) in gt_set:
-            labels[e] = 1.0
+
+        if gu > gv:
+            gu, gv = gv, gu
+
+        if (gu, gv) in gt_set:
+            labels[e] = 1
 
     return labels
+
+def build_knn_feature_space(node_feats, k=8):
+    """
+    Args:
+        node_feats:
+    Returns:
+        edge_index: (2, E)
+    """
+    N, D = node_feats.shape
+    if N < 2:
+        return torch.zeros((2, 0), dtype=torch.long, device=node_feats.device)
+    
+    k = min(k, N - 1)
+
+    dist = torch.cdist(node_feats, node_feats) # (N, N)
+
+    dist.fill_diagonal_(1e9)
+
+    knn_idx= torch.topk(dist, k, dim=1, largest=False).indices # (N, k)
+
+    # build edge list
+    src = torch.arange(N, device=node_feats.device).unsqueeze(1).expand_as(knn_idx)
+    dst = knn_idx
+
+    edge_index = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)
+    return edge_index
+
+
+def convert_edges_to_local(node_ids_global, edges_global):
+    """
+    node_ids_global: (Ng,) each GT node's global id
+    edges_global: (E, 2) each pair is (global_src, global_dst)
+    """
+    id2local = {gid.item(): i for i, gid in enumerate(node_ids_global)}
+
+    edges_local = []
+    for src, dst in edges_global:
+        src = int(src.item())
+        dst = int(dst.item())
+        if src in id2local and dst in id2local:
+            a = id2local[src]
+            b = id2local[dst]
+            edges_local.append((min(a, b), max(a, b)))
+
+    if edges_local:
+        return torch.tensor(edges_local, dtype=torch.long, device=node_ids_global.device)
+    else:
+        return torch.zeros((0, 2), dtype=torch.long, device=node_ids_global.device)
