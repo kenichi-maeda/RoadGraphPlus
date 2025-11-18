@@ -17,8 +17,10 @@ def build_junction_heatmaps(batch, stride: int = 32):
     J = torch.zeros((B, 1, h, w), dtype=torch.float32, device=device)
 
     def image_to_cell(x, y, HI, WI, Hc, Wc):
-        Xj = int(torch.clamp(torch.floor(x / WI * Wc), 0, Wc - 1))
-        Yj = int(torch.clamp(torch.floor(y / HI * Hc), 0, Hc - 1))
+        nx = x / (WI - 1)
+        ny = y / (HI - 1)
+        Xj = int(round(nx.item() * (Wc - 1)))
+        Yj = int(round(ny.item() * (Hc - 1)))
         return Xj, Yj
 
     for b in range(B):
