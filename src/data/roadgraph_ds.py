@@ -4,14 +4,8 @@ from PIL import Image
 import numpy as np
 
 class RoadGraphDataset(torch.utils.data.Dataset):
-    def __init__(self, root, max_items=None):
-        self.root = Path(root)
-        self.img_dir = self.root / "data/images"
-        self.lbl_dir = self.root / "data/labels"
-
-        self.items = sorted(self.lbl_dir.glob("*.json"))
-        if max_items is not None:
-            self.items = self.items[:max_items]
+    def __init__(self, files):
+        self.items = list(files)
 
     def __len__(self):
         return len(self.items)
@@ -29,14 +23,18 @@ class RoadGraphDataset(torch.utils.data.Dataset):
 
         # nodes 
         nodes_xy = []
+        nodes_global_ids = [] 
         for n in J["nodes"]:
+            gid = int(n["idx"])
             x = float(n["x"])
             y = float(n["y"])
             # clamp tiny negatives
             x = min(max(x, 0.0), W - 1.0)
             y = min(max(y, 0.0), H - 1.0)
             nodes_xy.append((x, y))
+            nodes_global_ids.append(gid)
         nodes = torch.tensor(nodes_xy, dtype=torch.float32) if nodes_xy else torch.zeros((0, 2), dtype=torch.float32)
+        nodes_global_ids = torch.tensor(nodes_global_ids, dtype=torch.long)
 
         # edges
         e_idx = []
@@ -48,12 +46,15 @@ class RoadGraphDataset(torch.utils.data.Dataset):
             "image": image,
             "nodes": nodes,
             "edges": edges,
+            "node_ids": nodes_global_ids,
             "meta": {
                 "tile_id": ipath.stem,
                 "H": H,
                 "W": W,
                 "coord_convention": J.get("coord_convention", "pixel_y_down"),
                 "region": J.get("region", ""),
+                "json_path": str(jpath),
+                "image_path": str(ipath)
             }
         }
         return sample
