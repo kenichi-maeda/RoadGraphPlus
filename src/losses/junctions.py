@@ -10,4 +10,9 @@ def junction_bce_loss(prob: torch.Tensor, target: torch.Tensor):
     """
     assert prob.shape == target.shape, f"shape mismatch: {prob.shape} vs {target.shape}"
 
-    return F.binary_cross_entropy(prob, target)
+    pos = target.float()
+    neg = 1 - pos
+    num_pos = pos.sum()
+    num_neg = neg.sum()
+    pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=5.0)
+    return F.binary_cross_entropy_with_logits(prob, target, pos_weight)
