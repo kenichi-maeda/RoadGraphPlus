@@ -2,10 +2,12 @@ import json, torch
 from pathlib import Path
 from PIL import Image
 import numpy as np
+from torchvision import transforms
 
 class RoadGraphDataset(torch.utils.data.Dataset):
-    def __init__(self, files):
+    def __init__(self, files, augment=False):
         self.items = list(files)
+        self.augment = augment
 
     def __len__(self):
         return len(self.items)
@@ -20,6 +22,18 @@ class RoadGraphDataset(torch.utils.data.Dataset):
         img = Image.open(ipath).convert("RGB")
         W = H = J["crop"]["out_size"]
         image = torch.tensor(np.array(img), dtype=torch.float32).permute(2, 0, 1) / 255.0 # C, H, W
+        if self.augment:
+            aug = transforms.ColorJitter(
+                brightness=0.4,
+                contrast=0.4,
+                saturation=0.3
+            )
+            image = aug(image)
+            image = torch.clamp(image, 0.0, 1.0)
+            image = image + 0.02 * torch.rand_like(image)
+            image = torch.clamp(image, 0.0, 1.0)
+            image = transforms.GaussianBlur(kernel_size=5)(image)
+            image = torch.clamp(image, 0.0, 1.0)
 
         # nodes 
         nodes_xy = []

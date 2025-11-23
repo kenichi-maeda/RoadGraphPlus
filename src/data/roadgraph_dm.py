@@ -27,9 +27,13 @@ class RoadGraphDataModule(pl.LightningDataModule):
         self.val_files = all_files[Nt: Nt + Nv]
         self.train_files = all_files[Nt + Nv:]
 
-        self.train_ds = RoadGraphDataset(self.train_files)
-        self.val_ds = RoadGraphDataset(self.val_files)
-        self.test_ds = RoadGraphDataset(self.test_files)
+        self.train_ds = RoadGraphDataset(self.train_files, augment=True)
+        self.val_ds = RoadGraphDataset(self.val_files, augment=False)
+        self.test_ds = RoadGraphDataset(self.test_files, augment=False)
+
+        print("train files", len(self.train_ds))
+        print("val files", len(self.val_ds))
+        print("test files", len(self.test_ds))
 
 
     def train_dataloader(self):
