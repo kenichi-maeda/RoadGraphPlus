@@ -38,14 +38,22 @@ def build_offset_targets(batch, stride: int = 32):
         # Someties two or more GT nodes (junctions) can fall into the same coarse cell.
         # But in the coarse GT tensor, each cell can only hold one value for the offset (u, v)
         # So,, we choose one representative junction for that cell (the first node encountered)
-        seen = set()
+        acc = {} # (yi, xi) -> [sum_u, sum_v, count]
         for xi, yi, ui, vi in zip(Xc.tolist(), Yc.tolist(), u.tolist(), v.tolist()):
             key = (yi, xi)
-            if key in seen:
-                continue  # TODO: improve this later. Maybe choose the one closest to center
-            seen.add(key)
+            if key not in acc:
+                acc[key] = [0.0, 0.0, 0]
+
+            acc[key][0] += ui
+            acc[key][1] += vi
+            acc[key][2] += 1
+
+        for (yi, xi), (sum_u, sum_v, count) in acc.items():
+            avg_u = sum_u / count
+            avg_v = sum_v / count
+
             M[b, 0, yi, xi] = 1.0
-            U[b, 0, yi, xi] = ui
-            U[b, 1, yi, xi] = vi
+            U[b, 0, yi, xi] = avg_u
+            U[b, 1, yi, xi] = avg_v
         
     return U, M
