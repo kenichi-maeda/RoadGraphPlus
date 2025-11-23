@@ -93,8 +93,17 @@ class JunctionPredictor(nn.Module):
         """
 
         super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, padding=0)
-        self.sigmoid = nn.Sigmoid()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(in_channels, 256, kernel_size=3, padding=2, dilation=2),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            nn.Conv2d(256, out_channels, kernel_size=1)
+        )
 
     def forward(self, x):
         """
@@ -104,7 +113,6 @@ class JunctionPredictor(nn.Module):
             torch.Tensor: Junction predictions (batch_sz, 1, H, W)
         """
         x = self.conv(x)
-        x = self.sigmoid(x)
         return x
     
 class NodePredictor(nn.Module):
@@ -201,7 +209,16 @@ class RoadGraphGNN(nn.Module):
 
 
 class BaselineModel(pl.LightningModule):
-    def __init__(self, warmup_epochs=10, anneal_epochs=20, min_gt_prob=0.2, lambda_e=1.0, **args):
+    def __init__(self, 
+                 warmup_epochs=10, 
+                 anneal_epochs=20, 
+                 min_gt_prob=0.2, 
+                 lambda_j=1.0,
+                 lambda_o=1.0,
+                 lambda_e=1.0, 
+                 pretrain=False,
+                 posttrain=False,
+                 **args):
         """
         Initializes PyTorch Lightning module
         """
@@ -209,8 +226,8 @@ class BaselineModel(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        self.lambda_j = 1.0
-        self.lambda_o = 1.0
+        self.lambda_j = lambda_j
+        self.lambda_o = lambda_o
         self.lambda_e = lambda_e
 
         self.backboneEncoder = BackBoneEncoder()
@@ -224,6 +241,28 @@ class BaselineModel(pl.LightningModule):
         self.nodePredictor = NodePredictor(256, 256)
 
         self.roadGraphGNN = RoadGraphGNN()
+
+        if pretrain:
+            for p in self.roadGraphGNN.parameters():
+                p.requires_grad = False
+
+        if posttrain:
+            for p in self.backboneEncoder.parameters():
+                p.requires_grad = False
+            for p in self.cnnFeatureEncoder_1.parameters():
+                p.requires_grad = False            
+            for p in self.offsetPredictor.parameters():
+                p.requires_grad = False    
+            for p in self.cnnFeatureEncoder_2.parameters():
+                p.requires_grad = False            
+            for p in self.junctionPredictor.parameters():
+                p.requires_grad = False  
+            for p in self.cnnFeatureEncoder_3.parameters():
+                p.requires_grad = False            
+            for p in self.nodePredictor.parameters():
+                p.requires_grad = False  
+            for p in self.roadGraphGNN.parameters():
+                p.requires_grad = True
 
 
     def forward(self, images):
@@ -259,7 +298,8 @@ class BaselineModel(pl.LightningModule):
         return 1.0 * (1.0 - t) + self.hparams.min_gt_prob  * t
     
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        params = [p for p in self.parameters() if p.requires_grad]
+        return torch.optim.AdamW(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
     
     def training_step(self, batch, batch_idx):
         images = batch["image"]      # (B,3,512,512)
@@ -311,7 +351,7 @@ class BaselineModel(pl.LightningModule):
                 
             else:
                 nodes_xy_pred, scores, cells_ij = detect_nodes(
-                    j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
+                    torch.sigmoid(j_pred[b:b+1]), o_pred[b:b+1], HI, WI, threshold=0.4
                 )
 
                 if nodes_xy_pred.size(0) < 2:
@@ -335,8 +375,8 @@ class BaselineModel(pl.LightningModule):
                 # This was wrong!!!
                 # edge_index = build_knn_from_pred(nodes_xy) 
 
-                edge_index = build_knn_feature_space(node_feats, k=8)
-                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=128)
+                edge_index = build_knn_feature_space(node_feats, k=6)
+                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=32)
                 valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
                 edge_index = edge_index[:, valid_edge_mask]
                 edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
@@ -382,10 +422,6 @@ class BaselineModel(pl.LightningModule):
             self.log("train/edge_f1", f1, prog_bar=True, sync_dist=True, batch_size=bs)
 
         
-        self._last_j_pred = j_pred.detach()
-        self._last_images = images.detach()
-        self._last_nodes = batch["nodes"]
-
         if tiles_used == 0:
             return None
 
@@ -455,7 +491,8 @@ class BaselineModel(pl.LightningModule):
         node_ids_list = batch["node_ids"]
         B = images.size(0)
 
-        o_pred, j_pred, n_map = self(images)
+        with torch.no_grad():
+            o_pred, j_pred, n_map = self(images)
 
         # Junction & Offset targets
         J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
@@ -487,7 +524,7 @@ class BaselineModel(pl.LightningModule):
             loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
 
             nodes_xy_pred, scores, cells_ij = detect_nodes(
-                j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
+                torch.sigmoid(j_pred[b:b+1]), o_pred[b:b+1], HI, WI, threshold=0.4
             )
 
             loss_e = images.new_tensor(0.0)
@@ -515,8 +552,8 @@ class BaselineModel(pl.LightningModule):
 
             # This was wrong!!!
             #edge_index = build_knn_from_pred(nodes_xy) 
-            edge_index = build_knn_feature_space(node_feats, k=8)
-            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=128)
+            edge_index = build_knn_feature_space(node_feats, k=6)
+            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=32)
 
             num_gt = len(nodes_xy_gt)
             num_pred = len(nodes_xy_pred)
