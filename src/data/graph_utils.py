@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def build_knn_candidates_and_labels(gt_nodes_xy: torch.Tensor,
                                     gt_edges_idx: torch.Tensor,
@@ -53,7 +54,15 @@ def detect_nodes(junc_logits, offsets_cell, HI, WI, threshold=0.3):
       
     """  
     p = junc_logits[0, 0]                   # (Hc, Wc)
+    # mask = p > threshold
+
+    p_max = F.max_pool2d(
+        p.unsqueeze(0).unsqueeze(0), 
+        kernel_size=3, stride=1, padding=1
+    )[0, 0]
+
     mask = p > threshold
+    mask = mask & (p >= p_max * 0.95)
     if mask.sum() == 0:
         device = p.device
         return (torch.zeros((0,2), device=device),
@@ -71,8 +80,10 @@ def detect_nodes(junc_logits, offsets_cell, HI, WI, threshold=0.3):
     xs_f = xs.to(torch.float32)
     ys_f = ys.to(torch.float32)
 
-    x = (u_cell + xs_f + 0.5) / Wc * WI
-    y = (v_cell + ys_f + 0.5) / Hc * HI
+    stride = HI // Hc
+
+    x = (u_cell + xs_f + 0.5) * stride
+    y = (v_cell + ys_f + 0.5) * stride
 
     nodes_xy = torch.stack([x, y], dim=1)    # (N,2)
     cells_ij = torch.stack([ys, xs], dim=1)  # (N,2)
