@@ -23,15 +23,20 @@ def main():
 
     # wandb_logger = WandbLogger(
     #     project="roadgraph",
-    #     name="exp_step1",
+    #     name="exp_step1_revised_40",
     #     log_model=False
     # )
 
-    # model = BaselineModel(lr=1e-3, 
+    # model = BaselineModel(lr=1e-4, 
     #                       weight_decay=1e-5, 
-    #                       warmup_epochs=50,
-    #                       anneal_epochs=1000,
-    #                       lambda_e=0.0)
+    #                       warmup_epochs=40,
+    #                       anneal_epochs=0,
+    #                       lambda_e=0.0,
+    #                       lambda_j=1.0,
+    #                       lambda_o=1.0,
+    #                       pretrain=True,
+    #                       posttrain=False
+    #                       )
     # checkpoint_cb = ModelCheckpoint(
     #     dirpath="checkpoints_stage1/",
     #     save_last=True,
@@ -42,7 +47,7 @@ def main():
     #     enable_checkpointing=True,
     #     callbacks=[checkpoint_cb],
     #     enable_progress_bar=True,
-    #     max_epochs=50,
+    #     max_epochs=40,
     #     accelerator="auto",
     #     log_every_n_steps=1,
     #     strategy="ddp_find_unused_parameters_true",
@@ -58,17 +63,21 @@ def main():
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="exp_step2",
+        name="exp_step2_revised_50",
         log_model=False
     )
 
     model = BaselineModel.load_from_checkpoint(
                           "checkpoints_stage1/last.ckpt",
-                          lr=1e-3, 
+                          lr=1e-4, 
                           weight_decay=1e-5, 
                           warmup_epochs=10,
                           anneal_epochs=20,
-                          min_gt_prob=0.2)
+                          min_gt_prob=0.2,
+                          posttrain=True,
+                          lambda_e=1.0,
+                          lambda_j=0.0,
+                          lambda_o=0.0)
     
     checkpoint_cb = ModelCheckpoint(
         dirpath="checkpoints_stage2/",
@@ -81,7 +90,7 @@ def main():
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        max_epochs=50,
+        max_epochs=40,
         accelerator="auto",
         log_every_n_steps=1,
         strategy="ddp_find_unused_parameters_true",
