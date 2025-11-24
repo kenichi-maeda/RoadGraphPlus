@@ -431,11 +431,9 @@ class BaselineModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         metrics_pred = self._eval_on_batch_predicted(batch)
-        metrics_gt  = self._eval_on_batch_gt_graph(batch)
 
         bs = batch["image"].size(0)
 
-        # Predicted-node metrics 
         self.log("val/loss_total", metrics_pred["loss_total"],
                 prog_bar=True, sync_dist=True, batch_size=bs)
         self.log("val/loss_j", metrics_pred["loss_j"],
@@ -446,43 +444,24 @@ class BaselineModel(pl.LightningModule):
                 prog_bar=False, sync_dist=True, batch_size=bs)
         self.log("val/edge_f1", metrics_pred["edge_f1"],
                 prog_bar=True, sync_dist=True, batch_size=bs)
-        self.log("val/junction_recall", metrics_pred["junction_recall"],
-                prog_bar=False, sync_dist=True, batch_size=bs)
-        self.log("val/junction_precision", metrics_pred["junction_precision"],
-                prog_bar=False, sync_dist=True, batch_size=bs)
 
-        # GT-node metrics
-        self.log("val/loss_e_gt", metrics_gt["loss_e_gt"],
-                prog_bar=False, sync_dist=True, batch_size=bs)
-        self.log("val/edge_f1_gt", metrics_gt["edge_f1_gt"],
-                prog_bar=True, sync_dist=True, batch_size=bs)
     
     def test_step(self, batch, batch_idx):
         metrics = self._eval_on_batch_predicted(batch)
         bs = batch["image"].size(0)
 
-        self.log("test/loss_total", metrics["loss_total"], prog_bar=True, sync_dist=True, batch_size=bs)
-        self.log("test/loss_j", metrics["loss_j"], prog_bar=True, sync_dist=True, batch_size=bs)
-        self.log("test/loss_off", metrics["loss_off"], prog_bar=True, sync_dist=True, batch_size=bs)
-        self.log("test/loss_e", metrics["loss_e"], prog_bar=True, sync_dist=True, batch_size=bs)
-        self.log("test/edge_f1", metrics["edge_f1"], prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_total", metrics["loss_total"], 
+                 prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_j", metrics["loss_j"], 
+                 prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_off", metrics["loss_off"], 
+                 prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/loss_e", metrics["loss_e"], 
+                 prog_bar=True, sync_dist=True, batch_size=bs)
+        self.log("test/edge_f1", metrics["edge_f1"], 
+                 prog_bar=True, sync_dist=True, batch_size=bs)
         
         return metrics
-    
-    def on_train_end(self):
-        return ...
-    
-    def on_train_epoch_end(self):
-        return ...
-
-    def on_validation_epoch_end(self):
-        return ...
-
-    def on_test_epoch_end(self):
-        return ...
-    
-    def on_train_batch_end(self, outputs, batch, batch_idx):
-        return ...
     
     def _eval_on_batch_predicted(self, batch):
         images = batch["image"]      # (B,3,512,512)
@@ -610,8 +589,6 @@ class BaselineModel(pl.LightningModule):
                 "loss_off": images.new_tensor(0.0),
                 "loss_e": images.new_tensor(0.0),
                 "edge_f1": images.new_tensor(0.0),
-                "junction_recall": images.new_tensor(0.0),
-                "junction_precision": images.new_tensor(0.0),
             }
         else:
             return {
@@ -620,92 +597,4 @@ class BaselineModel(pl.LightningModule):
                 "loss_off": total_loss_off / tiles_used,
                 "loss_e": total_loss_e / tiles_used,
                 "edge_f1": total_f1 / tiles_used,
-                "junction_recall": total_jrecall / tiles_used,
-                "junction_precision": total_jprec / tiles_used,
             }
-        
-    def _eval_on_batch_gt_graph(self, batch):
-        """
-        Evaluate GNN using GT nodes only.
-
-        Returns:
-            dict with:
-                - "edge_f1_gt": mean F1 over tiles in this batch
-                - "loss_e_gt": mean BCE loss over tiles in this batch
-        """
-        images         = batch["image"]      # (B, 3, HI, WI)
-        nodes_list     = batch["nodes"]      # list of length B
-        edges_list     = batch["edges"]      # list of length B
-        node_ids_list  = batch["node_ids"]   # list of length B
-
-        B        = images.size(0)
-        HI, WI   = images.shape[-2:]
-
-        with torch.no_grad():
-            o_pred, j_pred, n_map = self(images)
-
-        total_f1     = images.new_tensor(0.0)
-        total_loss_e = images.new_tensor(0.0)
-        tiles        = 0
-
-        for b in range(B):
-            nodes_xy_gt     = nodes_list[b]      # (N_gt, 2)
-            gt_edges_global = edges_list[b]
-            node_ids_global = node_ids_list[b]
-
-            # Skip empty tiles
-            if nodes_xy_gt.numel() == 0 or len(gt_edges_global) == 0:
-                continue
-
-            gt_edges_local = convert_edges_to_local(node_ids_global, gt_edges_global)
-            if gt_edges_local.numel() == 0:
-                continue
-
-            Hc, Wc      = n_map[b].shape[1:]
-            node_map_b  = n_map[b]
-
-            px = nodes_xy_gt[:, 0]
-            py = nodes_xy_gt[:, 1]
-
-            Xc = torch.clamp((px / WI * Wc).floor().long(), 0, Wc - 1)
-            Yc = torch.clamp((py / HI * Hc).floor().long(), 0, Hc - 1)
-
-            node_feats = node_map_b[:, Yc, Xc].permute(1, 0)   # (N_gt, C)
-
-            # Build KNN edges between GT nodes
-            edge_index, edge_label = build_knn_candidates_and_labels(nodes_xy_gt, gt_edges_local)
-            if edge_index.numel() == 0 or edge_label.numel() == 0:
-                continue
-
-            node_emb, eidx, edge_logits = self.roadGraphGNN(
-                node_feats,
-                nodes_xy_gt,
-                edge_index
-            )
-
-            loss_e = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float())
-
-            # F1 on GT graph
-            pred = (edge_logits.sigmoid() > 0.5).float()
-            tp   = (pred * edge_label).sum()
-            fp   = (pred * (1 - edge_label)).sum()
-            fn   = ((1 - pred) * edge_label).sum()
-
-            precision = tp / (tp + fp + 1e-6)
-            recall    = tp / (tp + fn + 1e-6)
-            f1        = 2 * precision * recall / (precision + recall + 1e-6)
-
-            total_f1     += f1
-            total_loss_e += loss_e
-            tiles        += 1
-
-        if tiles == 0:
-            return {
-                "edge_f1_gt": images.new_tensor(0.0),
-                "loss_e_gt": images.new_tensor(0.0),
-            }
-
-        return {
-            "edge_f1_gt": total_f1 / tiles,
-            "loss_e_gt": total_loss_e / tiles,
-        }
