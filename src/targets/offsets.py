@@ -37,7 +37,7 @@ def build_offset_targets(batch, stride: int = 32):
         # Each coarse cell covers 32 x 32 pixels of the original image.
         # Someties two or more GT nodes (junctions) can fall into the same coarse cell.
         # But in the coarse GT tensor, each cell can only hold one value for the offset (u, v)
-        # So,, we choose one representative junction for that cell (the first node encountered)
+        # If there are multiple values, we use the avg.
         acc = {} # (yi, xi) -> [sum_u, sum_v, count]
         for xi, yi, ui, vi in zip(Xc.tolist(), Yc.tolist(), u.tolist(), v.tolist()):
             key = (yi, xi)
