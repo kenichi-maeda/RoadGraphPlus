@@ -9,6 +9,11 @@ class RoadGraphDataset(torch.utils.data.Dataset):
         self.items = list(files)
         self.augment = augment
 
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+
     def __len__(self):
         return len(self.items)
     
@@ -34,6 +39,8 @@ class RoadGraphDataset(torch.utils.data.Dataset):
             image = torch.clamp(image, 0.0, 1.0)
             image = transforms.GaussianBlur(kernel_size=5)(image)
             image = torch.clamp(image, 0.0, 1.0)
+
+        image = self.normalize(image)
 
         # nodes 
         nodes_xy = []
