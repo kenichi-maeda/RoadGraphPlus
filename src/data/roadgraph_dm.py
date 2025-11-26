@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 from .roadgraph_ds import RoadGraphDataset
 from .collate import collate
 from pathlib import Path
+import random
 
 class RoadGraphDataModule(pl.LightningDataModule):
     def __init__(self, root, max_items=20, batch_size=4, val_frac=0.1, test_frac=0.1):
@@ -15,6 +16,8 @@ class RoadGraphDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         all_files = sorted((self.root / "data/labels").glob("*.json"))
+        random.seed(42)
+        random.shuffle(all_files)
 
         if self.max_items is not None:
             all_files = all_files[:self.max_items]
