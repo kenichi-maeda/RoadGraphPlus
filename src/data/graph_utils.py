@@ -2,9 +2,6 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from skimage.measure import label, regionprops
-from skimage.morphology import skeletonize
-from scipy.signal import convolve2d
 
 def build_knn_candidates_and_labels(gt_nodes_xy: torch.Tensor,
                                     gt_edges_idx: torch.Tensor,
@@ -310,51 +307,3 @@ def convert_edges_to_local(node_ids_global, edges_global):
     else:
         return torch.zeros((0, 2), dtype=torch.long, device=node_ids_global.device)
     
-def detect_nodes_unet(pred_mask, threshold=0.5):
-    """
-    Detect nodes from segmented road masks from UNet.
-    Args:
-      pred_mask:  segmented road mask
-    Returns:
-      nodes_xy:     node positions in pixel units
-    """ 
-    # only keep pixel > threshold
-    prob = torch.sigmoid(pred_mask)
-    pred_binary = (prob > threshold).float()
-    mask_np = pred_binary[0].squeeze(0).cpu().numpy() 
-
-    labeled = label(mask_np)
-
-    # remove tiny blobs
-    min_size = 60
-    for region in regionprops(labeled):
-        if region.area < min_size:
-            coords = region.coords
-            for y, x in coords:
-                mask_np[y, x] = 0
-
-    mask_bin = mask_np.astype(bool)
-    skeleton = skeletonize(mask_bin)
-    sk = skeleton.astype(np.uint8)
-
-    # 8-neighbor kernel
-    kernel = np.array([[1,1,1],
-                    [1,0,1],
-                    [1,1,1]], dtype=np.uint8)
-
-    neighbors = convolve2d(sk, kernel, mode="same", boundary="fill", fillvalue=0)
-    endpoints = (sk == 1) & (neighbors == 1)
-    junctions = (sk == 1) & (neighbors >= 3)
-
-    ey, ex = np.where(endpoints)
-    jy, jx =  np.where(junctions)
-
-    xs = np.concatenate([ex, jx])
-    ys = np.concatenate([ey, jy])
-
-    x = torch.tensor(xs, dtype=torch.float32)
-    y = torch.tensor(ys, dtype=torch.float32)
-
-    nodes_xy = torch.stack([x, y], dim=1).to(pred_mask.device)
-
-    return nodes_xy
