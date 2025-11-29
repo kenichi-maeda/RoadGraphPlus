@@ -8,6 +8,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 
 from src.models.baseline_model import BaselineModel
+from src.models.high_resolution import HighResolutionModel
 from src.data.roadgraph_dm import RoadGraphDataModule
 
 
@@ -21,20 +22,31 @@ def main():
     )
 
     # Step 3: Evaluation
-    model = BaselineModel.load_from_checkpoint(
-        "checkpoints_stage2/last.ckpt",
+    # model = BaselineModel.load_from_checkpoint(
+    #     "checkpoints_stage2/last_F_120.ckpt",
+    #     warmup_epochs=10,
+    #     anneal_epochs=20,
+    #     min_gt_prob=0.2,
+    #     lr=1e-3,
+    #     weight_decay=1e-5
+    # )
+    # model.eval()
+
+    model = HighResolutionModel.load_from_checkpoint(
+        "checkpoints_stage2/last_F_32.ckpt",
         warmup_epochs=10,
         anneal_epochs=20,
         min_gt_prob=0.2,
         lr=1e-3,
         weight_decay=1e-5
     )
+    model.eval()
 
 
     trainer = Trainer(
         accelerator="auto",
+        devices=1,
         log_every_n_steps=1,
-        strategy="ddp_find_unused_parameters_true",
     )
 
     trainer.test(model, datamodule=dm)
