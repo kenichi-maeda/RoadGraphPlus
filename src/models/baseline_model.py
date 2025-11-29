@@ -212,7 +212,6 @@ class BaselineModel(pl.LightningModule):
     def __init__(self, 
                  warmup_epochs=10, 
                  anneal_epochs=20, 
-                 min_gt_prob=0.2, 
                  lambda_j=1.0,
                  lambda_o=1.0,
                  lambda_e=1.0, 
@@ -258,9 +257,9 @@ class BaselineModel(pl.LightningModule):
             for p in self.junctionPredictor.parameters():
                 p.requires_grad = False  
             for p in self.cnnFeatureEncoder_3.parameters():
-                p.requires_grad = False            
+                p.requires_grad = True            
             for p in self.nodePredictor.parameters():
-                p.requires_grad = False  
+                p.requires_grad = True  
             for p in self.roadGraphGNN.parameters():
                 p.requires_grad = True
 
@@ -294,8 +293,9 @@ class BaselineModel(pl.LightningModule):
         if e < self.hparams.warmup_epochs:
             return 1.0
         
-        t = min(1.0, (e - self.hparams.warmup_epochs) / float(self.hparams.anneal_epochs))
-        return 1.0 * (1.0 - t) + self.hparams.min_gt_prob  * t
+        t = (e - self.hparams.warmup_epochs) / float(self.hparams.anneal_epochs)
+        t = min(1.0, max(0.0, t))
+        return 1.0 - t
     
     def configure_optimizers(self):
         params = [p for p in self.parameters() if p.requires_grad]
@@ -373,10 +373,9 @@ class BaselineModel(pl.LightningModule):
                 node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
                 # This was wrong!!!
-                # edge_index = build_knn_from_pred(nodes_xy) 
-
-                edge_index = build_knn_feature_space(node_feats, k=6)
-                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=32)
+                #edge_index = build_knn_from_pred(nodes_xy, k=12) 
+                edge_index = build_knn_feature_space(node_feats, k=12)
+                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
                 valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
                 edge_index = edge_index[:, valid_edge_mask]
                 edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
@@ -397,7 +396,7 @@ class BaselineModel(pl.LightningModule):
                 num_pos = pos.sum()
                 num_neg = neg.sum()
 
-                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=10.0)
+                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=5.0)
 
                 loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float(), pos_weight=pos_weight)
 
@@ -530,9 +529,9 @@ class BaselineModel(pl.LightningModule):
             node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
             # This was wrong!!!
-            #edge_index = build_knn_from_pred(nodes_xy) 
-            edge_index = build_knn_feature_space(node_feats, k=6)
-            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=32)
+            #edge_index = build_knn_from_pred(nodes_xy, k=12) 
+            edge_index = build_knn_feature_space(node_feats, k=12)
+            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
 
             num_gt = len(nodes_xy_gt)
             num_pred = len(nodes_xy_pred)
@@ -547,18 +546,19 @@ class BaselineModel(pl.LightningModule):
             edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
 
             if edge_index.numel() > 0 and edge_label.numel() > 0:
-                node_emb, eidx, edge_logits = self.roadGraphGNN(
-                    node_feats,
-                    nodes_xy,
-                    edge_index
-                )
+                with torch.no_grad():
+                    node_emb, eidx, edge_logits = self.roadGraphGNN(
+                        node_feats,
+                        nodes_xy,
+                        edge_index
+                    )
 
                 pos = edge_label.float()
                 neg = 1 - pos
                 num_pos = pos.sum()
                 num_neg = neg.sum()
 
-                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=10.0)
+                pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=5.0)
 
                 loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float(), pos_weight=pos_weight)
 
