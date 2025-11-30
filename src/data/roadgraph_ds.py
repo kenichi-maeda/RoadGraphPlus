@@ -3,11 +3,13 @@ from pathlib import Path
 from PIL import Image
 import numpy as np
 from torchvision import transforms
+import math
 
 class RoadGraphDataset(torch.utils.data.Dataset):
-    def __init__(self, files, augment=False):
+    def __init__(self, files, augment=False, add_vitrutal=False):
         self.items = list(files)
         self.augment = augment
+        self.add_virtual = add_vitrutal
 
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
@@ -54,14 +56,52 @@ class RoadGraphDataset(torch.utils.data.Dataset):
             y = min(max(y, 0.0), H - 1.0)
             nodes_xy.append((x, y))
             nodes_global_ids.append(gid)
-        nodes = torch.tensor(nodes_xy, dtype=torch.float32) if nodes_xy else torch.zeros((0, 2), dtype=torch.float32)
-        nodes_global_ids = torch.tensor(nodes_global_ids, dtype=torch.long)
 
         # edges
         e_idx = []
         for e in J["edges"]:
             e_idx.append((int(e["src_idx"]), int(e["dst_idx"])))
-        edges = torch.tensor(e_idx, dtype=torch.float32) if e_idx else torch.zeros((0, 2), dtype=torch.float32)
+        
+
+        if self.add_virtual:
+            # Add virtual points
+            virtual_threshold = 120.0
+            new_nodes = list(nodes_xy)
+            new_edges = []
+            new_global_ids = list(nodes_global_ids)
+
+            max_gid = max(new_global_ids) if len(new_global_ids) > 0 else -1
+
+            for src, dst in e_idx:
+                x1, y1 = nodes_xy[src]
+                x2, y2 = nodes_xy[dst]
+
+                dx = x1 - x2
+                dy = y1 - y2
+                dist = math.sqrt(dx**2 + dy**2)
+
+                if dist > virtual_threshold:
+                    midpoint_x = (x1 + x2) / 2
+                    midpoint_y = (y1 + y2) / 2
+                    vid = len(new_nodes)
+                    new_nodes.append((midpoint_x, midpoint_y))
+
+                    max_gid += 1
+                    new_global_ids.append(max_gid)
+
+                    new_edges.append((src, vid))
+                    new_edges.append((vid, dst))
+                else:
+                    new_edges.append((src, dst))
+
+            nodes = torch.tensor(new_nodes, dtype=torch.float32)
+            edges = torch.tensor(new_edges, dtype=torch.long)
+            nodes_global_ids = torch.tensor(new_global_ids, dtype=torch.long)
+        
+        else:
+            nodes = torch.tensor(nodes_xy, dtype=torch.float32) if nodes_xy else torch.zeros((0, 2), dtype=torch.float32)
+            nodes_global_ids = torch.tensor(nodes_global_ids, dtype=torch.long)
+            edges = torch.tensor(e_idx, dtype=torch.float32) if e_idx else torch.zeros((0, 2), dtype=torch.float32)
 
         sample = {
             "image": image,
