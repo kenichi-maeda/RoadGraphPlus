@@ -13,7 +13,7 @@ from src.data.roadgraph_dm import RoadGraphDataModule
 
 def main():
     seed_everything(42) 
-    
+    '''
     # Stage 1
     dm = RoadGraphDataModule(
         # root="/oscar/home/kmaeda2/RoadGraphPlus",
@@ -49,18 +49,18 @@ def main():
         strategy="ddp_find_unused_parameters_true",
     )
     trainer.fit(model, datamodule=dm)
-
+'''
     # Stage 2
-    '''
     dm = RoadGraphDataModule(
-        root="/oscar/home/kmaeda2/RoadGraphPlus",
+        # root="/oscar/home/kmaeda2/RoadGraphPlus",
+        root="/users/clingzhi/RoadGraphPlus", 
         batch_size=32,
         max_items=None
     )
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="exp_step2",
+        name="lingzhi_stage2_full", 
         log_model=False
     )
 
@@ -89,7 +89,7 @@ def main():
         strategy="ddp_find_unused_parameters_true",
     )
     trainer.fit(model, datamodule=dm)
-'''
+
 
 if __name__ == "__main__":
     main()
