@@ -19,12 +19,12 @@ def main():
         # root="/oscar/home/kmaeda2/RoadGraphPlus",
         root="/users/clingzhi/RoadGraphPlus",
         batch_size=32,
-        max_items=50
+        max_items=None
     )
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="lingzhi_stage1_quick",
+        name="lingzhi_stage1_full",
         log_model=False
     )
 
@@ -43,7 +43,7 @@ def main():
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        max_epochs=5,
+        max_epochs=25,
         accelerator="auto",
         log_every_n_steps=1,
         strategy="ddp_find_unused_parameters_true",
