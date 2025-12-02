@@ -373,7 +373,7 @@ class BaselineModel(pl.LightningModule):
                 node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
                 # This was wrong!!!
-                #edge_index = build_knn_from_pred(nodes_xy, k=12) 
+                ##edge_index = build_knn_from_pred(nodes_xy, k=12) 
                 edge_index = build_knn_feature_space(node_feats, k=12)
                 min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
                 valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
@@ -529,8 +529,8 @@ class BaselineModel(pl.LightningModule):
             node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
             # This was wrong!!!
-            #edge_index = build_knn_from_pred(nodes_xy, k=12) 
-            edge_index = build_knn_feature_space(node_feats, k=12)
+            edge_index = build_knn_from_pred(nodes_xy, k=12) 
+            #edge_index = build_knn_feature_space(node_feats, k=12)
             min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
 
             num_gt = len(nodes_xy_gt)
