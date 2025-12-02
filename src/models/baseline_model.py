@@ -311,6 +311,7 @@ class BaselineModel(pl.LightningModule):
                 
             else:
                 nodes_xy_pred, scores, cells_ij = detect_nodes(
+                    #point2: set a threshold and default should be 0.5 in the paper
                     j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
                 )
 
@@ -335,8 +336,14 @@ class BaselineModel(pl.LightningModule):
                 # This was wrong!!!
                 # edge_index = build_knn_from_pred(nodes_xy) 
 
+                # point1: k=4 in the paper
                 edge_index = build_knn_feature_space(node_feats, k=8)
                 min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=128)
+                # point3:The GNN incorrectly filters out 'phantom' edges 
+                # (those connected to nodes that failed to match a Ground Truth point).
+                #  This prevents the GNN from learning to explicitly penalize false 
+                # connections ($\text{label}=0$), potentially leading to an overly 
+                # aggressive model with low precision.
                 valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
                 edge_index = edge_index[:, valid_edge_mask]
                 edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
@@ -357,6 +364,7 @@ class BaselineModel(pl.LightningModule):
                 num_pos = pos.sum()
                 num_neg = neg.sum()
 
+                # potential value?
                 pos_weight = (num_neg / (num_pos + 1e-6)).clamp(max=10.0)
 
                 loss_e   = F.binary_cross_entropy_with_logits(edge_logits, edge_label.float(), pos_weight=pos_weight)
@@ -487,6 +495,7 @@ class BaselineModel(pl.LightningModule):
             loss_off = offset_loss(o_pred[b:b+1], offset_gt[b:b+1], offset_mask[b:b+1])
 
             nodes_xy_pred, scores, cells_ij = detect_nodes(
+                #point2: set a threshold and default should be 0.5 in the paper
                 j_pred[b:b+1], o_pred[b:b+1], HI, WI, threshold=0.1
             )
 
