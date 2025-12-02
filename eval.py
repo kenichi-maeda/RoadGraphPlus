@@ -15,19 +15,19 @@ def main():
     seed_everything(42) 
 
     dm = RoadGraphDataModule(
-        root="/oscar/home/kmaeda2/RoadGraphPlus",
+        root="/users/clingzhi/RoadGraphPlus/data",
         batch_size=32,
         max_items=None
     )
 
     # Step 3: Evaluation
     model = BaselineModel.load_from_checkpoint(
-        "checkpoints_stage2/last.ckpt",
-        warmup_epochs=10,
-        anneal_epochs=20,
+        "checkpoints_stage2_v2/last.ckpt",
+        warmup_epochs=15,
+        anneal_epochs=25,
         min_gt_prob=0.2,
-        lr=1e-3,
-        weight_decay=1e-5
+        lr=1e-4,
+        weight_decay=1e-4
     )
 
 
