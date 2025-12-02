@@ -60,20 +60,21 @@ def main():
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="lingzhi_stage2_full", 
+        name="lingzhi_stage2_v2",  
         log_model=False
     )
 
     model = BaselineModel.load_from_checkpoint(
-                          "checkpoints_stage1/last.ckpt",
-                          lr=1e-3, 
-                          weight_decay=1e-5, 
-                          warmup_epochs=10,
-                          anneal_epochs=20,
-                          min_gt_prob=0.2)
+        "checkpoints_stage1/last.ckpt",
+        lr=1e-4,              # ← Changed: 1e-3 → 1e-4
+        weight_decay=1e-4,    # ← Changed: 1e-5 → 1e-4
+        warmup_epochs=15,     # ← Changed: 10 → 15
+        anneal_epochs=25,     # ← Changed: 20 → 25
+        min_gt_prob=0.2
+    )
     
     checkpoint_cb = ModelCheckpoint(
-        dirpath="checkpoints_stage2/",
+        dirpath="checkpoints_stage2_v2/",  # ← Changed
         save_last=True,
         save_top_k=0
     )
@@ -83,7 +84,7 @@ def main():
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        max_epochs=50,
+        max_epochs=75, # ← Changed: 50 → 75
         accelerator="auto",
         log_every_n_steps=1,
         strategy="ddp_find_unused_parameters_true",
