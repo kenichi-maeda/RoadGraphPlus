@@ -1,0 +1,10 @@
+anneal_epochs: 0
+lambda_e: 0.0
+lambda_j: 1.0
+lambda_o: 1.0
+lr: 0.0001
+min_gt_prob: 0.2
+posttrain: false
+pretrain: true
+warmup_epochs: 40
+weight_decay: 1.0e-05

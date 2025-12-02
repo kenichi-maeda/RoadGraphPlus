@@ -12,6 +12,7 @@ from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, 
 from src.losses.junctions import junction_bce_loss
 from src.losses.offsets import offset_loss
 
+# Uses 32x32 feature maps instead of 16x16 feature maps in baseline_model.py
 class BackBoneEncoder(nn.Module):
     def __init__(self):
         """
