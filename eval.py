@@ -16,7 +16,7 @@ def main():
     seed_everything(42) 
 
     dm = RoadGraphDataModule(
-        root="/oscar/home/kmaeda2/RoadGraphPlus",
+        root="/oscar/home/dbchanin/RoadGraphPlus",
         batch_size=32,
         max_items=None
     )

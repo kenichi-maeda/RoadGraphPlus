@@ -16,7 +16,7 @@ def main():
     
     # Stage 1
     # dm = RoadGraphDataModule(
-    #     root="/oscar/home/kmaeda2/RoadGraphPlus",
+    #     root="/oscar/home/dbchanin/RoadGraphPlus",
     #     batch_size=32,
     #     max_items=None
     # )
@@ -56,7 +56,7 @@ def main():
 
     # Stage 2
     dm = RoadGraphDataModule(
-        root="/oscar/home/kmaeda2/RoadGraphPlus",
+        root="/oscar/home/dbchanin/RoadGraphPlus",
         batch_size=32,
         max_items=None
     )
