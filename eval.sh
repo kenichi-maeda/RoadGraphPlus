@@ -16,6 +16,6 @@ source /oscar/runtime/software/external/miniconda3/23.11.0/etc/profile.d/conda.s
 conda activate project
 
 module load cudnn cuda
-python -c "import torch; print('cuda available:', torch.cuda.is_available()); print('cuda version', torch.version.cuda)"
+/users/clingzhi/.conda/envs/project/bin/python -c "import torch; print('cuda available:', torch.cuda.is_available()); print('cuda version', torch.version.cuda)"
 
-python eval.py
+/users/clingzhi/.conda/envs/project/bin/python eval.py
