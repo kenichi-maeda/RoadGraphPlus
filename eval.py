@@ -22,7 +22,7 @@ def main():
 
     # Step 3: Evaluation
     model = BaselineModel.load_from_checkpoint(
-        "checkpoints_stage2_v2/last.ckpt",
+        "checkpoints/last_G_32.ckpt",  
         warmup_epochs=15,
         anneal_epochs=25,
         min_gt_prob=0.2,
