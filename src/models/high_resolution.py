@@ -12,16 +12,19 @@ from src.data.graph_utils import build_knn_candidates_and_labels, detect_nodes, 
 from src.losses.junctions import junction_bce_loss
 from src.losses.offsets import offset_loss
 
+# Uses 32x32 feature maps instead of 16x16 feature maps in baseline_model.py
 class BackBoneEncoder(nn.Module):
     def __init__(self):
         """
         Encodes aerial images using a pretrained ResNet-50 (initialized with ImageNet1K).
-        Produces 2048-channel feature maps at 1/32 resolution.
+        Produces 2048-channel feature maps at 1/16 resolution.
         """
 
         super().__init__()
 
         resnet = models.resnet50(weights="IMAGENET1K_V2")
+        resnet.layer4[0].conv2.stride = (1, 1)
+        resnet.layer4[0].downsample[0].stride = (1, 1)
         self.backbone = nn.Sequential(*list(resnet.children())[:-2]) # remove avgpool & fc
 
     def forward(self, x):
@@ -208,7 +211,7 @@ class RoadGraphGNN(nn.Module):
         return node_emb, edge_index, edge_logits
 
 
-class BaselineModel(pl.LightningModule):
+class HighResolutionModel(pl.LightningModule):
     def __init__(self, 
                  warmup_epochs=10, 
                  anneal_epochs=20, 
@@ -311,8 +314,8 @@ class BaselineModel(pl.LightningModule):
         o_pred, j_pred, n_map = self(images)
 
         # Junction & Offset targets
-        J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
-        offset_gt, offset_mask = build_offset_targets(batch, stride=32)
+        J_gt = build_junction_heatmaps(batch, stride=16)       # (B,1,32,32)
+        offset_gt, offset_mask = build_offset_targets(batch, stride=16)
 
         HI,WI = images.shape[-2:]
         batch_loss = images.new_tensor(0.0) 
@@ -373,9 +376,9 @@ class BaselineModel(pl.LightningModule):
                 node_feats = node_map_b[:, Yc, Xc].permute(1,0)
 
                 # This was wrong!!!
-                ##edge_index = build_knn_from_pred(nodes_xy, k=12) 
-                edge_index = build_knn_feature_space(node_feats, k=12)
-                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
+                edge_index = build_knn_from_pred(nodes_xy, k=12) 
+                # edge_index = build_knn_feature_space(node_feats, k=12)
+                min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=30)
                 valid_edge_mask = (min_idx[edge_index[0]] >= 0) & (min_idx[edge_index[1]] >= 0)
                 edge_index = edge_index[:, valid_edge_mask]
                 edge_label = build_edge_labels(edge_index, min_idx, gt_edges_local)
@@ -473,8 +476,8 @@ class BaselineModel(pl.LightningModule):
             o_pred, j_pred, n_map = self(images)
 
         # Junction & Offset targets
-        J_gt = build_junction_heatmaps(batch, stride=32)       # (B,1,16,16)
-        offset_gt, offset_mask = build_offset_targets(batch, stride=32)
+        J_gt = build_junction_heatmaps(batch, stride=16)       # (B,1,16,16)
+        offset_gt, offset_mask = build_offset_targets(batch, stride=16)
 
         HI,WI = images.shape[-2:]        
 
@@ -530,8 +533,8 @@ class BaselineModel(pl.LightningModule):
 
             # This was wrong!!!
             edge_index = build_knn_from_pred(nodes_xy, k=12) 
-            #edge_index = build_knn_feature_space(node_feats, k=12)
-            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=40)
+            # edge_index = build_knn_feature_space(node_feats, k=12)
+            min_idx = assign_pred_to_gt(nodes_xy, nodes_xy_gt, max_dist=30)
 
             num_gt = len(nodes_xy_gt)
             num_pred = len(nodes_xy_pred)

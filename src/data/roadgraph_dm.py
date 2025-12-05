@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 from .roadgraph_ds import RoadGraphDataset
 from .collate import collate
 from pathlib import Path
+import random
 
 class RoadGraphDataModule(pl.LightningDataModule):
     def __init__(self, root, max_items=20, batch_size=4, val_frac=0.1, test_frac=0.1):
@@ -15,6 +16,8 @@ class RoadGraphDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         all_files = sorted((self.root / "data/labels").glob("*.json"))
+        random.seed(42)
+        random.shuffle(all_files)
 
         if self.max_items is not None:
             all_files = all_files[:self.max_items]
@@ -27,9 +30,13 @@ class RoadGraphDataModule(pl.LightningDataModule):
         self.val_files = all_files[Nt: Nt + Nv]
         self.train_files = all_files[Nt + Nv:]
 
-        self.train_ds = RoadGraphDataset(self.train_files)
-        self.val_ds = RoadGraphDataset(self.val_files)
-        self.test_ds = RoadGraphDataset(self.test_files)
+        self.train_ds = RoadGraphDataset(self.train_files, augment=True, add_vitrutal=False)
+        self.val_ds = RoadGraphDataset(self.val_files, augment=False)
+        self.test_ds = RoadGraphDataset(self.test_files, augment=False)
+
+        print("train files", len(self.train_ds))
+        print("val files", len(self.val_ds))
+        print("test files", len(self.test_ds))
 
 
     def train_dataloader(self):

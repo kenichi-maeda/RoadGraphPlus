@@ -1,10 +1,12 @@
+# Written with assistance from ChatGPT
+
 import os, json, glob, argparse
 from typing import Dict, Tuple, List, Optional
 from PIL import Image
 
 def _clip_line_to_rect(x0, y0, x1, y1, rx0, ry0, rx1, ry1) -> Optional[Tuple[float,float,float,float]]:
     """
-    Canonical Liang-Barsky segment clip to axis-aligned rect.
+    Extracts rect.
     Returns (cx0, cy0, cx1, cy1) or None.
     """
     eps = 1e-9 
@@ -118,7 +120,7 @@ def process_one_tile(img_path: str, gt_path: str,
                     if use_orig not in local_nodes:
                         local_nodes[use_orig] = (px - x0, py - y0)
                     return use_orig
-                # else create/get synthetic node at the boundary point
+                # else create/get node at the boundary point
                 key = (int(round((px - x0)*1000)), int(round((py - y0)*1000)))
                 sid = border_kd.get(key)
                 if sid is not None:
