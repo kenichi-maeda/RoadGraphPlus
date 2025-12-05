@@ -15,7 +15,7 @@ def main():
     seed_everything(42) 
 
     dm = RoadGraphDataModule(
-        root="/users/clingzhi/RoadGraphPlus/data",
+        root="/users/clingzhi/RoadGraphPlus",
         batch_size=32,
         max_items=None
     )
