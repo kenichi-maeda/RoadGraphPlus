@@ -60,7 +60,7 @@ def main():
     edge_counts = []
     all_errors = []
     
-    print("🔍 Validating Moscow RoadTracer dataset...\n")
+    print("Validating Moscow RoadTracer dataset...\n")
     
     for label_file in sorted(labels_dir.glob('moscow_*.json')):
         total += 1
@@ -79,14 +79,14 @@ def main():
                 edge_counts.append(data['num_edges'])
     
     print(f"{'='*60}")
-    print(f"📊 Validation Results:")
+    print(f"Validation Results:")
     print(f"{'='*60}")
     print(f"Total samples:     {total}")
     print(f"Valid samples:     {valid} ({valid/total*100:.1f}%)")
     print(f"Invalid samples:   {total - valid}")
     
     if node_counts:
-        print(f"\n📈 Graph Statistics:")
+        print(f"\nGraph Statistics:")
         print(f"Nodes per graph:   {statistics.mean(node_counts):.1f} (avg)")
         print(f"                   {min(node_counts)} ~ {max(node_counts)} (range)")
         print(f"                   {statistics.median(node_counts):.0f} (median)")
@@ -95,17 +95,17 @@ def main():
         print(f"                   {statistics.median(edge_counts):.0f} (median)")
     
     if all_errors:
-        print(f"\n❌ Errors Found ({len(all_errors)} samples):")
+        print(f"\nErrors Found ({len(all_errors)} samples):")
         for chip_num, errors in all_errors[:10]:
             print(f"  moscow_{chip_num}: {', '.join(errors)}")
         if len(all_errors) > 10:
             print(f"  ... and {len(all_errors) - 10} more")
     else:
-        print(f"\n✅ All samples passed validation!")
+        print(f"\nAll samples passed validation!")
     
     print(f"\n{'='*60}")
     
-    print(f"\n📋 Sample Details (first 3):")
+    print(f"\nSample Details (first 3):")
     for label_file in sorted(labels_dir.glob('moscow_*.json'))[:3]:
         with open(label_file) as f:
             data = json.load(f)
