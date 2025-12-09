@@ -7,3 +7,6 @@ lightning_logs/
 version_0/
 version_1/
 checkpoints_stage1/
+checkpoints_stage2/
+data_augmented/
+checkpoints_stage3/
