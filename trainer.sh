@@ -13,9 +13,9 @@ module avail hpcx-mpi
 
 module load miniconda3/23.11.0s
 source /oscar/runtime/software/external/miniconda3/23.11.0/etc/profile.d/conda.sh
-conda activate project
+conda activate csci2470_final_project
 
 module load cudnn cuda
-/users/clingzhi/.conda/envs/project/bin/python -c "import torch; print('cuda available:', torch.cuda.is_available()); print('cuda version', torch.version.cuda)"
+python -c "import torch; print('cuda available:', torch.cuda.is_available()); print('cuda version', torch.version.cuda)"
 
-/users/clingzhi/.conda/envs/project/bin/python trainer.py
+python trainer.py

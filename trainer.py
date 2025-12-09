@@ -13,26 +13,30 @@ from src.data.roadgraph_dm import RoadGraphDataModule
 
 def main():
     seed_everything(42) 
-    '''
+    
     # Stage 1
     dm = RoadGraphDataModule(
-        # root="/oscar/home/kmaeda2/RoadGraphPlus",
-        root="/users/clingzhi/RoadGraphPlus",
+        root="/oscar/home/dbchanin/RoadGraphPlus",
         batch_size=32,
         max_items=None
     )
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="lingzhi_stage1_full",
+        name="exp_step1_revised_40",
         log_model=False
     )
 
-    model = BaselineModel(lr=1e-3, 
-                        weight_decay=1e-5, 
-                        warmup_epochs=5,
-                        anneal_epochs=20,
-                        lambda_e=0.0)
+    model = BaselineModel(lr=1e-4, 
+                          weight_decay=1e-5, 
+                          warmup_epochs=40,
+                          anneal_epochs=0,
+                          lambda_e=0.0,
+                          lambda_j=1.0,
+                          lambda_o=1.0,
+                          pretrain=True,
+                          posttrain=False
+                          )
     checkpoint_cb = ModelCheckpoint(
         dirpath="checkpoints_stage1/",
         save_last=True,
@@ -43,38 +47,40 @@ def main():
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        max_epochs=25,
+        max_epochs=40,
         accelerator="auto",
         log_every_n_steps=1,
         strategy="ddp_find_unused_parameters_true",
     )
     trainer.fit(model, datamodule=dm)
-'''
+
     # Stage 2
     dm = RoadGraphDataModule(
-        # root="/oscar/home/kmaeda2/RoadGraphPlus",
-        root="/users/clingzhi/RoadGraphPlus", 
+        root="/oscar/home/dbchanin/RoadGraphPlus",
         batch_size=32,
         max_items=None
     )
 
     wandb_logger = WandbLogger(
         project="roadgraph",
-        name="lingzhi_stage2_v2",  
+        name="exp_step2_revised_50",
         log_model=False
     )
 
     model = BaselineModel.load_from_checkpoint(
-        "checkpoints_stage1/last.ckpt",
-        lr=1e-4,              # ← Changed: 1e-3 → 1e-4
-        weight_decay=1e-4,    # ← Changed: 1e-5 → 1e-4
-        warmup_epochs=15,     # ← Changed: 10 → 15
-        anneal_epochs=25,     # ← Changed: 20 → 25
-        min_gt_prob=0.2
-    )
+                          "checkpoints_stage1/last.ckpt",
+                          lr=1e-4, 
+                          weight_decay=1e-5, 
+                          warmup_epochs=10,
+                          anneal_epochs=20,
+                          min_gt_prob=0.2,
+                          posttrain=True,
+                          lambda_e=1.0,
+                          lambda_j=0.0,
+                          lambda_o=0.0)
     
     checkpoint_cb = ModelCheckpoint(
-        dirpath="checkpoints_stage2_v2/",  # ← Changed
+        dirpath="checkpoints_stage2/",
         save_last=True,
         save_top_k=0
     )
@@ -84,7 +90,7 @@ def main():
         enable_checkpointing=True,
         callbacks=[checkpoint_cb],
         enable_progress_bar=True,
-        max_epochs=75, # ← Changed: 50 → 75
+        max_epochs=40,
         accelerator="auto",
         log_every_n_steps=1,
         strategy="ddp_find_unused_parameters_true",
